@@ -2,8 +2,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_huggingface import HuggingFaceEndpoint
-import chromadb
-from chromadb.config import Settings
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import VectorParams,Distance,PointStruct
 import re
 import pprint
 
@@ -39,50 +39,49 @@ ids=[str(chunk.metadata["chunk_id"]) for chunk in chunks]
 
 vectors=embedings.embed_documents(texts)
 
-client=chromadb.Client(Settings(persist_directory="./vectordb/chroma"))
-collection=client.create_collection(name="my_collection")
-
+client=QdrantClient(path="./vectordb/qdrant")
+client.recreate_collection(
+  collection_name="ragdata",
+  vectors_config=VectorParams(
+    size=384,
+    distance=Distance.COSINE
+  )
+)
 vectors=embedings.embed_documents(texts)
+points=[]
+for chunk,vector in zip(chunks,vectors):
+  points.append(
+    PointStruct(
+      id=chunk.metadata["chunk_id"],
+      vector=vector,
+      payload={
+        "text":chunk.page_content,
+        **chunk.metadata
+      }
+    )
+  )
 
-collection.upsert(documents=texts,embeddings=vectors,metadatas=metadata,ids=ids)
 
+client.upsert(
+  collection_name="ragdata",
+  points=points
+)
 
-print(f"Numebr of Inserted were : {collection.count()}")
+info=client.get_collection("ragdata")
+print(info.points_count)
 
 query="How does top management demonstrate leadership and commitment to the ISMS?"
 
-query_vector=embedings.embed_query(query)
-
-results=collection.query(
-  query_embeddings=[query_vector],
-  n_results=5
+query_embeding=embedings.embed_query(query)
+results=client.query_points(
+  collection_name="ragdata",  
+  query=query_embeding,
+  limit=5
 )
-
-
-for i in results['documents']:
-  print(i)
-
-print(len(results["documents"]))
 print(results)
-for i in results:
+
+for i in results.points:
+  print("\n\n\n")
   print(i)
-print(f"Score of the results {results['distances'][0][0]}")
 
-
-retrived_docs=results["documents"][0]
-retrived_distances=results["distances"][0]
-print(len(results["documents"][0]))
-
-def clean_text(text):
-  text=re.sub(r'\s+',' ',text)
-  text=re.sub(r'\.{3,}','',text)
-  return text
-
-for i in results["documents"][0]:
-  print("\n\n\n")
-  print(clean_text(i))
-
-for i in results["metadatas"][0]:
-  for j in i:
-    print(j)
-  print("\n\n\n")
+client.close()
